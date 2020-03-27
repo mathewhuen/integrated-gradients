@@ -1,0 +1,191 @@
+import numpy as np
+import math
+import tensorflow as tf
+##################TO DO: verify with actual model generalize to any input shape
+def integrated_gradients(model, index, X, baseline, steps, layer=-1, use_batches=True, batch_size=None, return_grads=False, return_preds=False, verbose=False):
+    """
+    A Tensorflow 2.0 update for the Integrated Gradients algorithm found here: https://github.com/ankurtaly/Integrated-Gradients
+    
+    Input can be a numpy array or a list of arrays (for models accepting list input). If you are running a large model and want to predict for a large dataset, set 'use_batches' to true (default) and specify a batch size. 
+    
+    To do: 
+    X) check if using keras or tf model for list input or not
+    2) add support for accessing intermediate layers (specify index and layer)
+    3) add prediction output for sanity checks
+    X) add support for tensor input
+    5) Delete input after calculating gradient (for memory management)
+    6) add default reference (noise, zeros, sampling)
+    
+    Inputs
+    ------
+    
+    model : a Tensorflow model
+        The model for which to caclulate attributions.
+    index : int
+        The index of the target output node.
+    X : numpy.ndarray, list(numpy.ndarray)
+        Input data for which to calculate attributions.
+    baseline : numpy.ndarray, list(numpy.ndarray)
+        Reference data for the IG algorithm. Choosing a good baseline should be done with domain knowledge and testing. See the discussion in the original article for further suggestions: https://arxiv.org/abs/1703.01365  
+        For a TLDR, they generally recommend using zero-inputs (zero embeddings, an all black image, and etc). If you are unsure if zero-values represent an appropriate reference for your work, you can just input a bunch of random points and the algorithm will average the result. This is my prefered "general" method.
+    steps : int
+        The number of steps to calculate over. More steps will be more accurate, but will also require more calculations.
+    use_batches : bool <optional>
+        A flag to use batches when calculating gradients. Default is True.
+    batch_size : int <optional>
+        The batch size for calculating gradients. Only applicable if 'use_batches' is set to True. A value of None is mapped to the 0th dimension of X. Default is None.
+    return_grads : bool <optional>
+        A flag to return grad results in addition to the integrated gradient calculations (probably no reason to need this). Default is False.
+    return_preds : bool <optional>
+        A flag to return prediction results in addition to the integrated gradient calculations for sanity checks (not implemented yet). Default is False.
+    """
+    X, baseline, batch_size = check_args(model, X, baseline, steps, use_batches, batch_size)
+    paths = []
+    if(verbose):
+        print('Setting up input matrix.')
+    for i in range(len(X)):
+        target = np.repeat(X[i], baseline[i].shape[0], axis=0)
+#         print('target.shape', target.shape)
+        base = np.tile(baseline[i], tuple([X[i].shape[0]]+[1 for i in range(len(X[i].shape)-1)]))#(X[i].shape[0],1))
+#         base = np.tile(baseline[i], (X[i].shape[0], *(tuple([1 for j in range(len(X[i].shape)-1)]))))
+#         print('base.shape', base.shape)
+#         stepping = np.tile(np.arange(steps+1).reshape(-1,1)/steps, (base.shape[0], 1))
+#         stepping = np.tile(np.arange(steps+1).reshape(-1,1)/steps, tuple([base.shape[0]]+[1 for i in range(len(base.shape)-1)]))
+        tile_base = np.arange(steps+1).reshape(-1,1)/steps
+        stepping = np.tile(tile_base.reshape(steps+1, *tuple([1 for j in range(len(base.shape)-1)])), base.shape)
+#         print('stepping.shape', stepping.shape)
+        paths.append(np.repeat(base, steps+1, axis=0) + np.repeat((target-base), steps+1, axis=0)*stepping)
+    
+    grads_ = get_grads(model=model, layer=layer, index=index, X=paths, use_batches=use_batches, batch_size=batch_size, return_preds=return_preds, verbose=verbose)
+    
+    if(verbose):
+        print('Integrating gradients.')
+#     print('grads_[0].shape', grads_[0].shape)
+    mask1 = np.repeat(True, steps+1)
+    mask1[0] = False
+    mask1 = np.tile(mask1, base.shape[0])
+    mask2 = np.repeat(True, steps+1)
+    mask2[-1] = False
+    mask2 = np.tile(mask2, base.shape[0])
+#     out = [np.zeros(X[i].shape for i in range(len(X)))]
+    out = []
+    for i in range(len(grads_)):
+        grads = grads_[i][mask1] + grads_[i][mask2]
+        avg_grads = np.array([np.average(grads[j*steps:(j+1)*steps], axis=0) for j in range(base.shape[0])])#rechoose range ref
+#         print('avg_grads.shape', avg_grads.shape)
+#         print('avg_grads.shape', avg_grads.shape)
+#         target = np.repeat(X[i], baseline[i].shape[0], axis=0)
+#         base = np.tile(baseline[i], (X[i].shape[0],1))
+        target = np.repeat(X[i], baseline[i].shape[0], axis=0)
+        base = np.tile(baseline[i], tuple([X[i].shape[0]]+[1 for i in range(len(X[i].shape)-1)]))#(X[i].shape[0],1))
+        ig = (target-base)*avg_grads
+#         print('ig', ig.shape)
+        out.append(np.array([np.average(ig[j*baseline[i].shape[0]:(j+1)*baseline[i].shape[0]], axis=0) for j in range(X[i].shape[0])]))
+#         out = [np.concatenate((out, ig), axis=0) for j in range(len(ig))]
+    if(return_grads):
+        out = (out, grads_)
+    return(out)
+#         out.append((inp-baseline)*)
+        
+#     grads = (grads[:-1] + grads[1:]) / 2.0
+#     avg_grads = np.average(grads, axis=0)
+#     integrated_gradients = (inp-baseline)*avg_grads
+    
+def check_args(model, X, baseline, steps, use_batches, batch_size):
+    if(type(X) == np.ndarray):#, tf.python.framework.ops.EagerTensor)):
+        X = [X]
+    elif(type(X)!=list):
+        raise ValueError('X is not an numpy array or a list of numpy arrays')
+    for i, item in enumerate(X):
+        if(type(item)!=np.ndarray):
+            raise ValueError('X is not an numpy array or a list of numpy arrays')
+        if(item.size==item.shape[0]):
+            item.reshape(1,-1)
+            X[i] = item
+    if(type(baseline)==np.ndarray):
+        baseline = [baseline]
+    elif(type(baseline)!=list):
+        raise ValueError('baseline is not an numpy array or a list of numpy arrays')
+    for i, item in enumerate(baseline):
+        if(type(item)!=np.ndarray):
+            raise ValueError('baseline is not an numpy array or a list of numpy arrays')
+        if(item.size==item.shape[0]):
+            item.reshape(1,-1)
+            baseline[i] = item
+    for i in range(len(X)):
+        assert X[i].shape[1:] == baseline[i].shape[1:], 'X and baseline do not have matching dimensions'
+    
+    if(batch_size==None):
+        batch_size = X[0].shape[0]
+    return(X, baseline, batch_size)
+
+def get_grads(model, layer, index, X, use_batches, batch_size, verbose, return_preds):
+    if(verbose):
+        print('Calculating gradients.')
+#     print(model)
+    if(use_batches):
+        grads = [np.zeros((0, *(X[i].shape[1:]))) for i in range(len(X))]#makelist of empty numpy arrays
+        ratio = X[0].shape[0]/batch_size
+        loops = math.floor(ratio)
+        rem = int((ratio-loops)*batch_size)
+        
+        if(verbose):
+            sb = status_bar(loops+1)
+            sb.start()
+            
+        for i in range(loops+1):
+            if(i<loops):
+                X_ = [item[i*batch_size:(i+1)*batch_size] for item in X]
+            elif(rem!=0):
+                X_ = [item[i*batch_size:i*batch_size+rem] for item in X]
+            else:
+                if(verbose):
+                    sb.iterate()
+                continue
+                
+            X_ = [tf.constant(x) for x in X_]
+            with tf.GradientTape() as tape:
+                tape.watch(X_)
+                Y = model(X_)[:, index]
+            res = tape.gradient(Y, X_)
+#             res = X_
+            grads = [np.vstack([grads[j], res[j]]) for j in range(len(grads))]
+            
+            if(verbose):
+                sb.iterate()
+    else:
+#         print('X.shape', X[0].shape)
+#         X = [tf.constant(X[i]) for i in range(len(X))]
+        X = tf.constant(X[0])
+#         print('X.shape', X.shape)
+        with tf.GradientTape() as tape:
+            tape.watch(X)
+            Y = model(X)[:, index]
+        grads = [tape.gradient(Y, X)]
+#         grads = X
+#         print('grads', grads)
+    return(grads)
+
+class status_bar:
+    def __init__(self, estimated_reps, bar_size=40):
+        self.reps = estimated_reps
+        self.bar_size = bar_size
+        self.finished = 1
+        self.ratio = bar_size/estimated_reps
+        
+    def start(self):
+        print('-'*(self.bar_size-self.finished), end="\r")
+        
+    def iterate(self):
+        finished = int(self.ratio*self.finished)
+        if(finished>self.bar_size):
+            print('='*self.bar_size+' estimated number of reps exceeded. estimated_reps: {er}, current_reps: {cr}'.format(er=self.reps, cr=self.finished), end="\r")
+        else:
+            print('{eqs}{mins} {fin}/{reps}'.format(
+                eqs = '='*finished,
+                mins = '-'*(self.bar_size-finished),
+                fin = str(self.finished),
+                reps = str(self.reps)
+            ), end="\r")
+        self.finished += 1
+        
