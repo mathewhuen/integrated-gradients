@@ -5,6 +5,4 @@ Implementation of Integrated Gradients from [Axiomatic Attribution for Deep Netw
 
 To do: 
   1) Add prediction output for result verification
-  2) Add support for minibatches
-  3) Add default baseline options (noise, zeros, sampling)
-  4) Add example notebook
+  2) Add default baseline options (noise, zeros, sampling)
