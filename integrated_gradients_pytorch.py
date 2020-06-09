@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import math
 import itertools
 
 def axis_repeat(tens, times):# need to make general
@@ -15,7 +16,7 @@ def axis_tile(tens, reps, axis=0):
     out = tens.repeat(*shape)#*tuple(X[i].shape[1:]))
     return out
 
-def integrated_gradients(model, index, X, baseline, steps, use_batches=True, batch_size=None, return_grads=False, return_preds=False, verbose=False, unpack=True):
+def integrated_gradients(model, model_kwargs, index, X, baseline, steps, use_batches=True, batch_size=None, return_grads=False, return_preds=False, verbose=False, unpack=True):
     """
     A Pytorch update for the Integrated Gradients algorithm found here: https://github.com/ankurtaly/Integrated-Gradients
     
@@ -23,14 +24,15 @@ def integrated_gradients(model, index, X, baseline, steps, use_batches=True, bat
     
     To do: 
     1) Add prediction output for result verification
-    2) Add support for minibatches
-    3) add default base options (noise, zeros, sampling)
+    2) add default base options (noise, zeros, sampling)
     
     Inputs
     ------
     
     model : a pytorch model
         The model for which to caclulate attributions. Input for the model needs to be tensors or a list of tensors. If other inputs are needed, they need to be preloaded with a wrapper or parital function.
+    model_kwargs : dict
+        An optional dictionary of kwargs for model.
     index : int
         The index of the target output node.
     X : torch.Tensor, numpy.ndarray, list(torch.Tensor), list(numpy.ndarray)
@@ -51,6 +53,8 @@ def integrated_gradients(model, index, X, baseline, steps, use_batches=True, bat
     unpack : bool <optional>
         A flag to indicate that model inputs should be unpacked from the input list. Set False if the input for the model is a single list. Default is True.
     """
+
+
 
     def check_args(model, X, baseline, steps, use_batches, batch_size):#check devices used
         def check_list(X, name):
@@ -96,22 +100,53 @@ def integrated_gradients(model, index, X, baseline, steps, use_batches=True, bat
     
     
     
-    def get_grads(model, unpack, index, X, use_batches, batch_size, verbose, return_preds):
+    def get_grads(model, model_kwargs, unpack, index, X, use_batches, batch_size, verbose, return_preds):
         for x in X:
             x.requires_grad = True
         if(verbose):
             print('Calculating gradients.')
             
         if(use_batches):
-            print('minibatches are not yet implemented--will run the whole dataset')
+            grads = [[] for i in range(len(X))]
+            ratio = X[0].shape[0]/batch_size
+            loops = math.floor(ratio)
+            rem = math.ceil((ratio-loops)*batch_size)
+            if(verbose):
+                sb = status_bar(loops+1)
+                sb.start()
             
-        if(unpack):
-            Y = model(*X)[:, index].sum()
+            for i in range(loops+1):
+                if(i<loops):
+                    X_ = []
+                    for tens in X:
+                        new_tens = tens[i*batch_size:(i+1)*batch_size].data
+                        X_.append(new_tens)
+                elif(rem!=0):
+                    X_ = []
+                    for tens in X:
+                        new_tens = tens[i*batch_size:i*batch_size+rem].data
+                        X_.append(new_tens)
+                else:
+                    continue
+                for x_ in X_:
+                    x_.requires_grad = True
+                if(unpack):
+                    Y = model(*X_, **model_kwargs)[:, index].sum()
+                else:
+                    Y = model(X_, **model_kwargs)[:, index].sum()
+                Y.backward()
+                del Y
+                for j,ls in enumerate(grads):
+                    ls.append(X_[j].grad)
+            grads = [torch.cat(ls, dim=0) for ls in grads]
         else:
-            Y = model(X)[:, index].sum()
-        Y.backward()
-        del Y
-        grads = [x.grad for x in X]
+            if(unpack):
+                Y = model(*X, **model_kwargs)[:, index].sum()
+            else:
+                Y = model(X, **model_kwargs)[:, index].sum()
+            Y.backward()
+            del Y
+            grads = [x.grad for x in X]
         return(grads)
     
     
@@ -128,10 +163,9 @@ def integrated_gradients(model, index, X, baseline, steps, use_batches=True, bat
     for i in range(len(X)):
         target.append(axis_repeat(X[i], baseline[i].shape[0]))
         base.append(axis_tile(baseline[i], X[i].shape[0]))
-#         print(target[-1].shape, base[-1].shape, axis_tile(torch.linspace(0, 1, steps+1).to(device).view(-1,1), target[-1].shape[0]).shape)
         paths.append(axis_repeat(base[-1], steps+1) + axis_repeat(target[-1]-base[-1], steps+1) * axis_tile(torch.linspace(0, 1, steps+1).to(device).view(-1,*tuple([1]*len(base[-1].shape[1:]))), target[-1].shape[0]))
     
-    grads_ = get_grads(model=model, unpack=unpack, index=index, X=paths, use_batches=use_batches, batch_size=batch_size, return_preds=return_preds, verbose=verbose)
+    grads_ = get_grads(model=model, model_kwargs=model_kwargs, unpack=unpack, index=index, X=paths, use_batches=use_batches, batch_size=batch_size, return_preds=return_preds, verbose=verbose)
     
     if(verbose):
         print('Integrating gradients.')
