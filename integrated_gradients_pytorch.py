@@ -56,7 +56,7 @@ def integrated_gradients(model, model_kwargs, index, X, baseline, steps, use_bat
 
 
 
-    def check_args(model, X, baseline, steps, use_batches, batch_size):#check devices used
+    def check_args(model, X, index, baseline, steps, use_batches, batch_size):#check devices used
         def check_list(X, name):
             if(type(X) == torch.Tensor):
                 X = [X]
@@ -95,7 +95,14 @@ def integrated_gradients(model, model_kwargs, index, X, baseline, steps, use_bat
     
         if(batch_size==None):
             batch_size = X[0].shape[0]
-        return(X, baseline, batch_size, device)
+            
+        assert type(index) in [list, np.ndarray, int, torch.Tensor], "'index' should be a list, numpy array, or tensor of integers or just a single integer"
+        if(type(index)!=int):
+            index = np.array(index).reshape(-1)
+            assert index.shape[0]==X[0].shape[0]
+            for i in index:
+                assert int(i)==i, "All elements in 'index' must be of type int."#this actually allows for arrays of floats etc...fix later
+        return(X, index, baseline, batch_size, device)
 
     
     
@@ -154,10 +161,11 @@ def integrated_gradients(model, model_kwargs, index, X, baseline, steps, use_bat
     
     
     #start IG
-    X, baseline, batch_size, device = check_args(model, X, baseline, steps, use_batches, batch_size)
+    X, index, baseline, batch_size, device = check_args(model, X, index, baseline, steps, use_batches, batch_size)
     paths = []
     target = []
     base = []
+    indices = [i for ind in index for i in [ind]*baseline[0].shape[0]*steps]
     if(verbose):
         print('Setting up input matrix.')
     for i in range(len(X)):
@@ -165,7 +173,7 @@ def integrated_gradients(model, model_kwargs, index, X, baseline, steps, use_bat
         base.append(axis_tile(baseline[i], X[i].shape[0]))
         paths.append(axis_repeat(base[-1], steps+1) + axis_repeat(target[-1]-base[-1], steps+1) * axis_tile(torch.linspace(0, 1, steps+1).to(device).view(-1,*tuple([1]*len(base[-1].shape[1:]))), target[-1].shape[0]))
     
-    grads_ = get_grads(model=model, model_kwargs=model_kwargs, unpack=unpack, index=index, X=paths, use_batches=use_batches, batch_size=batch_size, return_preds=return_preds, verbose=verbose)
+    grads_ = get_grads(model=model, model_kwargs=model_kwargs, unpack=unpack, index=indices, X=paths, use_batches=use_batches, batch_size=batch_size, return_preds=return_preds, verbose=verbose)
     
     if(verbose):
         print('Integrating gradients.')
@@ -186,4 +194,3 @@ def integrated_gradients(model, model_kwargs, index, X, baseline, steps, use_bat
     if(return_grads):
         out = (out, grads_)
     return(out)
-
