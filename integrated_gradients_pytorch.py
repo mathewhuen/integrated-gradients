@@ -33,8 +33,8 @@ def integrated_gradients(model, model_kwargs, index, X, baseline, steps, use_bat
         The model for which to caclulate attributions. Input for the model needs to be tensors or a list of tensors. If other inputs are needed, they need to be preloaded with a wrapper or parital function.
     model_kwargs : dict
         An optional dictionary of kwargs for model.
-    index : int
-        The index of the target output node.
+    index : int, numpy.ndarray(int), torch.Tensor(int), list(int)
+        The index of the target output node. If an array, tensor, or list of ints, then indices should match instances from the first dimension of X.
     X : torch.Tensor, numpy.ndarray, list(torch.Tensor), list(numpy.ndarray)
         Input data for which to calculate attributions.
     baseline : torch.Tensor, numpy.ndarray, list(torch.Tensor), list(numpy.ndarray)
